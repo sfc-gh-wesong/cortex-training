@@ -268,12 +268,9 @@ positional job id (`fwd-bwd`, `step`, `load`, `generate`, `weight-sync`).
 
 #### When to Use target-sub-job-id
 
-Most sessions have a single training sub-job, so `--target-sub-job-id` can be
-omitted. Use it when:
-
-- Your session has multiple training sub-jobs (multi-DP configurations)
-- You need to load different checkpoints into different sub-jobs
-- You want explicit control over which sub-job receives the checkpoint
+A job has at most one training sub-job, so `--target-sub-job-id` can be omitted.
+Use it when you want explicit control over which sub-job receives the
+checkpoint rather than relying on the server's default resolution.
 
 #### DP Size Compatibility
 
@@ -353,7 +350,7 @@ sub-job ids when needed:
 
 ```bash
 cortex-training --job-id JOB_ID weight-sync \
-  --source-sub-job-id JOB_ID:training:1 \
+  --source-sub-job-id JOB_ID:training:0 \
   --target-sub-job-id JOB_ID:sampling:0 \
   --target-sub-job-id JOB_ID:sampling:1
 ```

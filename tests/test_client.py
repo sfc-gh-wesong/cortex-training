@@ -1130,6 +1130,64 @@ class TestCreateJob:
         with pytest.raises(ValueError, match="sub_job_configs"):
             c.create_job_from_body({"sub_job_configs": []})
 
+    def test_rejects_two_training_sub_jobs_before_post(self):
+        c = _make_client()
+        training = SubJobConfig.training_job(
+            model_name="gpt2",
+            optimizer={"type": "adamw"},
+            max_seq_len=128,
+            train_batch_size=1,
+            n_gpus=2,
+        )
+        with pytest.raises(ValueError, match="at most one training sub-job"):
+            c.create_job(sub_jobs=[training, training])
+        c._session.post.assert_not_called()
+
+    def test_create_job_from_body_rejects_two_training_sub_jobs_before_post(self):
+        c = _make_client()
+        body = {
+            "sub_job_configs": [
+                {
+                    "job_type": "training",
+                    "model_name": "gpt2",
+                    "training_config": {"max_seq_len": 128, "train_batch_size": 1, "n_gpus": 2},
+                },
+                {
+                    "job_type": " TRAINING ",
+                    "model_name": "gpt2",
+                    "training_config": {"max_seq_len": 128, "train_batch_size": 1, "n_gpus": 2},
+                },
+            ],
+        }
+        with pytest.raises(ValueError, match="at most one training sub-job"):
+            c.create_job_from_body(body)
+        c._session.post.assert_not_called()
+
+    def test_allows_one_training_with_multiple_sampling(self):
+        c = _make_client(post_json={"job_id": "srv-1"})
+        training = SubJobConfig.training_job(
+            model_name="gpt2",
+            optimizer={"type": "adamw"},
+            max_seq_len=128,
+            train_batch_size=1,
+            n_gpus=2,
+        )
+        sampling = SubJobConfig.sampling_job(model_name="gpt2", max_seq_len=128, n_gpus=1)
+        assert c.create_job(sub_jobs=[training, sampling, sampling]) == "srv-1"
+        body = c._session.post.call_args.kwargs["json"]
+        assert [sj["job_type"] for sj in body["sub_job_configs"]] == [
+            "training",
+            "sampling",
+            "sampling",
+        ]
+
+    def test_allows_multiple_sampling_without_training(self):
+        c = _make_client(post_json={"job_id": "srv-1"})
+        sampling = SubJobConfig.sampling_job(model_name="gpt2", max_seq_len=128, n_gpus=1)
+        assert c.create_job(sub_jobs=[sampling, sampling]) == "srv-1"
+        body = c._session.post.call_args.kwargs["json"]
+        assert [sj["job_type"] for sj in body["sub_job_configs"]] == ["sampling", "sampling"]
+
     def test_create_job_from_body_rejects_debug_without_env(self, monkeypatch):
         monkeypatch.delenv(nc.DEBUG_OPTIONS_ENV, raising=False)
         c = _make_client(post_json={"job_id": "srv"})
