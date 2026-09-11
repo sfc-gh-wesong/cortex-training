@@ -753,11 +753,13 @@ for sj in training_sub_jobs:
     print(f"ID: {sj['sub_job_id']}, DP size: {sj['training_config']['n_gpus']}")
 ```
 
-#### When to use target_sub_job_id
+#### When to use target_sub_job_id (load)
 
 A job has at most one training sub-job, so omit `target_sub_job_id` to use the
 default. Use it when you want explicit routing control — for example naming the
-sub-job in tooling that must not rely on the server's default resolution.
+sub-job in tooling that must not rely on the server's default resolution. It
+selects a training sub-job; the sampling-side selector is `target_sub_job_ids` on
+weight sync.
 
 #### DP size compatibility
 

@@ -266,11 +266,14 @@ cortex-training get JOB_ID | jq '.sub_jobs[] | select(.job_type=="training") | {
 The global `--job-id` option is only for the data-plane subcommands that have no
 positional job id (`fwd-bwd`, `step`, `load`, `generate`, `weight-sync`).
 
-#### When to Use target-sub-job-id
+#### When to Use load --target-sub-job-id
 
-A job has at most one training sub-job, so `--target-sub-job-id` can be omitted.
-Use it when you want explicit control over which sub-job receives the
-checkpoint rather than relying on the server's default resolution.
+A job has at most one training sub-job, so `load --target-sub-job-id` can be
+omitted. Use it when you want explicit control over which sub-job receives the
+checkpoint rather than relying on the server's default resolution; it must name a
+training sub-job. `weight-sync` takes its own `--target-sub-job-id`, which names
+sampling sub-jobs and can be repeated — see
+[Sync Training Weights](#sync-training-weights).
 
 #### DP Size Compatibility
 
