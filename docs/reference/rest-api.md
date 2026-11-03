@@ -307,6 +307,21 @@ or validation details:
 }
 ```
 
+When a 4xx or 5xx body is a JSON error with a `code` or a `message`, the Python
+client adds them to the end of the `requests.HTTPError` message that
+`raise_for_status()` gives:
+
+```text
+[snowflake request id: <id>] 403 Client Error: Forbidden for url: <url> (<code>): <message>
+```
+
+A message longer than 1,000 characters is cut and ends in `...`, and common
+credential patterns in it are redacted. The error's `.response` is still the
+service's answer. A 3xx keeps its `Unexpected redirect` text, and a body that
+is not JSON, or has neither field, leaves the message as `raise_for_status()`
+gives it. An error the client raises with its own explanation instead, such as
+`DatabaseAccessError` or a chunk-group error, keeps its own message.
+
 Most data-plane calls and request polls require a `running` job. `tail-logs` is
 the exception allowed during `placing`.
 

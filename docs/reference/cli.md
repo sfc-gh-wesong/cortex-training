@@ -2112,5 +2112,8 @@ If you see `Invalid URL ... No scheme supplied`, the config is using a bare
 Snowflake hostname as `base_url`. Use `host` for Snowflake PAT auth, or use a
 full local/mock URL such as `http://localhost:8084` for `base_url`.
 
-For server errors, the CLI prints any Snowflake request id and response body
-returned by the service. Include those details when debugging a `500`.
+For server errors, the CLI prints the error with the service's error code and
+message, any Snowflake request id, and the response body returned by the
+service. It leaves the body out when the body has only the error code, message
+and request id, and the error line already shows each of them. Include those
+details when debugging a `500`.

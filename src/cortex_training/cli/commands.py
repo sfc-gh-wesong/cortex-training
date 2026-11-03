@@ -1444,6 +1444,28 @@ def _request_sent_pat(response: Any) -> bool:
     return headers.get("X-Snowflake-Authorization-Token-Type") == "PROGRAMMATIC_ACCESS_TOKEN"
 
 
+# The fields of a JSON error body that an HTTP error's text can already show:
+# the code and message the client adds to it, and the request id it starts with.
+_SHOWN_ERROR_BODY_KEYS = frozenset({"code", "error_code", "message", "request_id"})
+
+
+def _message_shows_body(message: str, response: Any) -> bool:
+    """Whether ``message`` already shows the response's JSON error body.
+
+    The client adds a JSON error body's code and message to an HTTP error's text,
+    so printing a body that has only those fields and the request id, each of
+    them in the text, would repeat them.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and bool(body) and set(body) <= _SHOWN_ERROR_BODY_KEYS and all(
+        isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value) in message
+        for value in body.values()
+    )
+
+
 def _format_error(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
@@ -1455,7 +1477,7 @@ def _format_error(exc: BaseException) -> str:
         parts.append(f"snowflake request id: {request_id}")
 
     body = (getattr(response, "text", "") or "").strip()
-    if body:
+    if body and not _message_shows_body(parts[0], response):
         if len(body) > 4000:
             body = body[:4000] + "...<truncated>"
         parts.append(f"response body: {body}")

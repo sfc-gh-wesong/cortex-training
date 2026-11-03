@@ -729,10 +729,15 @@ _SECRET_IN_ERROR_RE = re.compile(
 )
 
 
+def _redact_secrets(text: str) -> str:
+    """Return ``text`` with the obvious secrets ``_SECRET_IN_ERROR_RE`` finds redacted."""
+    return _SECRET_IN_ERROR_RE.sub(r"\1<redacted>", text)
+
+
 def _safe_metric_error_message(exc: BaseException) -> str:
     """Return a bounded, single-line error message with obvious secrets redacted."""
     message = " ".join(str(exc).split())
-    message = _SECRET_IN_ERROR_RE.sub(r"\1<redacted>", message)
+    message = _redact_secrets(message)
     return message[:_METRIC_ERROR_MESSAGE_LIMIT]
 
 
@@ -1960,7 +1965,7 @@ def _model_deployment_description(
     return result
 
 
-# Longest server error message kept in a model deployment error.
+# Longest server error message kept in an error the client raises.
 _MAX_SERVER_ERROR_MESSAGE_CHARS = 1000
 
 
@@ -1983,6 +1988,38 @@ def _server_error_code_and_message(
                 message if isinstance(message, str) and message.strip() else None,
             )
     return None, None
+
+
+def _bounded_server_message(message: str) -> str:
+    """Return ``message`` cut to ``_MAX_SERVER_ERROR_MESSAGE_CHARS``, ending in ``...`` when cut."""
+    if len(message) > _MAX_SERVER_ERROR_MESSAGE_CHARS:
+        return message[:_MAX_SERVER_ERROR_MESSAGE_CHARS] + "..."
+    return message
+
+
+def _add_server_message_to_error(
+    exc: BaseException, response: requests.Response | None
+) -> None:
+    """Append the ``code`` and ``message`` of ``response``'s JSON error body to ``exc``'s message.
+
+    requests' own text ("403 Client Error: Forbidden for url: ...") leaves them
+    out, and the message is often the only place that says what to change, such
+    as an account parameter. A body that is not JSON, or has neither, leaves the
+    message as it is, and so does a message that already carries them. Never
+    raises, so it cannot replace the error it explains.
+    """
+    try:
+        if not exc.args or not isinstance(exc.args[0], str):
+            return
+        code, detail = _server_error_code_and_message(response)
+        suffix = f" ({code})" if code else ""
+        if detail:
+            suffix += f": {_bounded_server_message(_redact_secrets(detail))}"
+        if not suffix or suffix in exc.args[0]:
+            return
+        exc.args = (exc.args[0] + suffix, *exc.args[1:])
+    except Exception:
+        logger.debug("could not add the server's error message to an HTTP error", exc_info=True)
 
 
 def _sanitized_model_deployment_request_error(
@@ -2015,9 +2052,7 @@ def _sanitized_model_deployment_request_error(
         if detail:
             if job_id and deployment_id:
                 detail = detail.replace(job_id, deployment_id)
-            if len(detail) > _MAX_SERVER_ERROR_MESSAGE_CHARS:
-                detail = detail[:_MAX_SERVER_ERROR_MESSAGE_CHARS] + "..."
-            message += f": {detail}"
+            message += f": {_bounded_server_message(detail)}"
     request_id = _response_snowflake_request_id(response)
     if request_id:
         message += f" (snowflake request id: {request_id})"
@@ -3158,7 +3193,9 @@ class CortexTrainingClient:
         "Schema ... is not found or not authorized") raises
         :class:`DatabaseAccessError`. ``explain_database=False`` leaves that
         answer as it is, for routes whose path names no database; a
-        client from :meth:`for_job` always leaves it.
+        client from :meth:`for_job` always leaves it. Any other 4xx or 5xx
+        raises ``requests.HTTPError``; when the answer's JSON body has an
+        error ``code`` or ``message``, the error's message ends with them.
         """
         explain_database = explain_database and self._explain_database_errors
         fn = getattr(self._session, method.lower())
@@ -3303,6 +3340,8 @@ class CortexTrainingClient:
                     resp.raise_for_status()
                 except requests.exceptions.HTTPError as exc:
                     _add_snowflake_request_id_to_error(exc, sf_request_id)
+                    if resp.status_code >= 400:
+                        _add_server_message_to_error(exc, resp)
                     raise
                 return resp
 

@@ -3252,6 +3252,79 @@ def test_a_schema_not_found_error_shows_the_server_message_once():
     assert err.count(message) == 1
 
 
+_CROSS_REGION_MESSAGE = (
+    "Cortex Training runs in AWS US West (Oregon). To use it from this account's region, "
+    "set the account parameter CORTEX_ENABLED_CROSS_REGION to AWS_US, AWS_GLOBAL or ANY_REGION."
+)
+
+
+def _refusing_client(content: bytes, content_type: str = "application/json"):
+    """A client whose every GET the service refuses with HTTP 403 and ``content``."""
+    import requests
+
+    from cortex_training import CortexTrainingClient
+
+    client = CortexTrainingClient(
+        base_url="https://test.snowflakecomputing.com", database="MY_DB", schema="PUBLIC", max_retries=0
+    )
+    response = requests.Response()
+    response.status_code = 403
+    response.reason = "Forbidden"
+    response.url = f"{client._prefix}/job-1"
+    response.headers["Content-Type"] = content_type
+    response.headers["x-snowflake-request-id"] = "sf-req-1"
+    response._content = content
+    response._content_consumed = True
+    client._session = MagicMock()
+    client._session.get.return_value = response
+    return client
+
+
+def test_an_http_error_shows_the_server_message_once():
+    body = {"code": "517600", "message": _CROSS_REGION_MESSAGE, "request_id": "sf-req-1", "error_code": "517600"}
+    client = _refusing_client(json.dumps(body).encode())
+    stderr = io.StringIO()
+
+    rc = cli.main(["get", "job-1"], client_factory=lambda _args: client, stderr=stderr)
+
+    assert rc == 1
+    assert stderr.getvalue() == (
+        "error: [snowflake request id: sf-req-1] 403 Client Error: Forbidden for url: "
+        f"{client._prefix}/job-1 (517600): {_CROSS_REGION_MESSAGE}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        pytest.param(b"<html><body>Forbidden</body></html>", "text/html", id="not-json"),
+        pytest.param(b'{"detail": [{"loc": ["body"], "msg": "bad"}]}', "application/json", id="no-code-or-message"),
+        pytest.param(b'{"code": "517604", "message": "bad", "details": {"field": "x"}}', "application/json",
+                     id="a-field-the-message-leaves-out"),
+        # Values the error line happens to hold: "2" is in /api/v2/, "D" in MY_DB.
+        pytest.param(b'{"code": "517604", "message": "bad", "attempt": 2}', "application/json",
+                     id="a-number-the-url-holds"),
+        pytest.param(b'{"code": "517604", "message": "bad", "field": "D"}', "application/json",
+                     id="a-letter-the-url-holds"),
+        pytest.param(b'{"code": "517604", "message": "bad", "request_id": "sf-other"}', "application/json",
+                     id="another-request-id"),
+        pytest.param(json.dumps({"code": "517604", "message": "x" * 1500}).encode(), "application/json",
+                     id="a-message-cut-to-1000-characters"),
+        pytest.param(b'{"code": "517604", "message": "token=abc123 was rejected"}', "application/json",
+                     id="a-message-with-a-credential-redacted"),
+    ],
+)
+def test_an_http_error_keeps_a_body_its_message_does_not_show(content, content_type):
+    stderr = io.StringIO()
+
+    rc = cli.main(
+        ["get", "job-1"], client_factory=lambda _args: _refusing_client(content, content_type), stderr=stderr
+    )
+
+    assert rc == 1
+    assert stderr.getvalue().endswith(f"\nresponse body: {content.decode()}\n")
+
+
 def test_invalid_job_json_returns_error(tmp_path):
     path = tmp_path / "job.json"
     path.write_text("[]", encoding="utf-8")
