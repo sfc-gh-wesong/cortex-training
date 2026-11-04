@@ -43,6 +43,8 @@ from cortex_training.model_deployment import OUT_FAILURE
 from cortex_training.model_deployment import OUT_STATUS
 from cortex_training.model_deployment import ModelDeploymentSpec
 
+logger = logging.getLogger(__name__)
+
 _CONFIG_KEYS = {
     "base_url",
     "host",
@@ -1444,26 +1446,21 @@ def _request_sent_pat(response: Any) -> bool:
     return headers.get("X-Snowflake-Authorization-Token-Type") == "PROGRAMMATIC_ACCESS_TOKEN"
 
 
-# The fields of a JSON error body that an HTTP error's text can already show:
-# the code and message the client adds to it, and the request id it starts with.
-_SHOWN_ERROR_BODY_KEYS = frozenset({"code", "error_code", "message", "request_id"})
+def _message_shows_server_error(message: str, response: Any) -> bool:
+    """Whether ``message`` already shows the code and message of ``response``'s JSON error body.
 
-
-def _message_shows_body(message: str, response: Any) -> bool:
-    """Whether ``message`` already shows the response's JSON error body.
-
-    The client adds a JSON error body's code and message to an HTTP error's text,
-    so printing a body that has only those fields and the request id, each of
-    them in the text, would repeat them.
+    The client adds them to the HTTP errors it raises for a 4xx or 5xx answer.
+    Errors it explains in its own words, such as a missing database, leave them
+    to the body.
     """
+    from cortex_training.client.core import _server_message_suffix
+
     try:
-        body = response.json()
+        suffix = _server_message_suffix(response)
     except Exception:
+        logger.debug("could not read the service's error from the response body", exc_info=True)
         return False
-    return isinstance(body, dict) and bool(body) and set(body) <= _SHOWN_ERROR_BODY_KEYS and all(
-        isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value) in message
-        for value in body.values()
-    )
+    return bool(suffix) and suffix in message
 
 
 def _format_error(exc: BaseException) -> str:
@@ -1477,7 +1474,7 @@ def _format_error(exc: BaseException) -> str:
         parts.append(f"snowflake request id: {request_id}")
 
     body = (getattr(response, "text", "") or "").strip()
-    if body and not _message_shows_body(parts[0], response):
+    if body and not _message_shows_server_error(parts[0], response):
         if len(body) > 4000:
             body = body[:4000] + "...<truncated>"
         parts.append(f"response body: {body}")

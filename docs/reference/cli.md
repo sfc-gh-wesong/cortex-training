@@ -2113,7 +2113,10 @@ Snowflake hostname as `base_url`. Use `host` for Snowflake PAT auth, or use a
 full local/mock URL such as `http://localhost:8084` for `base_url`.
 
 For server errors, the CLI prints the error with the service's error code and
-message, any Snowflake request id, and the response body returned by the
-service. It leaves the body out when the body has only the error code, message
-and request id, and the error line already shows each of them. Include those
-details when debugging a `500`.
+message, and any Snowflake request id. A message over 1,000 characters is cut,
+common credential patterns in it are redacted, and the body's other fields are
+not printed. The CLI also prints the raw response body when the error line
+shows no code or message from it: for a body that is not JSON or has neither,
+such as a validation `detail` list, and for errors the client explains in its
+own words, such as a missing database or schema. Include those details when
+debugging a `500`.

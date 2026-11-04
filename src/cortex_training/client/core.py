@@ -1997,6 +1997,19 @@ def _bounded_server_message(message: str) -> str:
     return message
 
 
+def _server_message_suffix(response: requests.Response | None) -> str:
+    """The text an HTTP error's message gains from ``response``'s JSON error body.
+
+    `` (<code>): <message>``, or the half the body has, with the message
+    redacted and cut; ``""`` when the body is not JSON or has neither.
+    """
+    code, detail = _server_error_code_and_message(response)
+    suffix = f" ({code})" if code else ""
+    if detail:
+        suffix += f": {_bounded_server_message(_redact_secrets(detail))}"
+    return suffix
+
+
 def _add_server_message_to_error(
     exc: BaseException, response: requests.Response | None
 ) -> None:
@@ -2011,10 +2024,7 @@ def _add_server_message_to_error(
     try:
         if not exc.args or not isinstance(exc.args[0], str):
             return
-        code, detail = _server_error_code_and_message(response)
-        suffix = f" ({code})" if code else ""
-        if detail:
-            suffix += f": {_bounded_server_message(_redact_secrets(detail))}"
+        suffix = _server_message_suffix(response)
         if not suffix or suffix in exc.args[0]:
             return
         exc.args = (exc.args[0] + suffix, *exc.args[1:])

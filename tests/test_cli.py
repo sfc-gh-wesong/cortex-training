@@ -3258,8 +3258,15 @@ _CROSS_REGION_MESSAGE = (
 )
 
 
-def _refusing_client(content: bytes, content_type: str = "application/json"):
-    """A client whose every GET the service refuses with HTTP 403 and ``content``."""
+def _refusing_client(
+    content: bytes,
+    content_type: str = "application/json",
+    *,
+    status_code: int = 403,
+    reason: str = "Forbidden",
+    request_headers: dict[str, str] | None = None,
+):
+    """A client whose every GET the service refuses with ``status_code`` and ``content``."""
     import requests
 
     from cortex_training import CortexTrainingClient
@@ -3268,16 +3275,25 @@ def _refusing_client(content: bytes, content_type: str = "application/json"):
         base_url="https://test.snowflakecomputing.com", database="MY_DB", schema="PUBLIC", max_retries=0
     )
     response = requests.Response()
-    response.status_code = 403
-    response.reason = "Forbidden"
+    response.status_code = status_code
+    response.reason = reason
     response.url = f"{client._prefix}/job-1"
     response.headers["Content-Type"] = content_type
     response.headers["x-snowflake-request-id"] = "sf-req-1"
     response._content = content
     response._content_consumed = True
+    if request_headers is not None:
+        response.request = requests.Request("GET", response.url, headers=request_headers).prepare()
     client._session = MagicMock()
     client._session.get.return_value = response
     return client
+
+
+def _get_output(client) -> tuple[int, str]:
+    """The exit code and the whole output, stdout then stderr, of ``get job-1`` on ``client``."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    rc = cli.main(["get", "job-1"], client_factory=lambda _args: client, stdout=stdout, stderr=stderr)
+    return rc, stdout.getvalue() + stderr.getvalue()
 
 
 def test_an_http_error_shows_the_server_message_once():
@@ -3294,35 +3310,124 @@ def test_an_http_error_shows_the_server_message_once():
     )
 
 
+_PLAIN_ERROR_BODY = {
+    "code": "517600",
+    "message": _CROSS_REGION_MESSAGE,
+    "request_id": "sf-req-1",
+    "error_code": "517600",
+}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(_PLAIN_ERROR_BODY, id="code-message-request-id"),
+        pytest.param({**_PLAIN_ERROR_BODY, "sqlState": "42501"}, id="one-more-field"),
+        pytest.param({**_PLAIN_ERROR_BODY, "details": {"field": "x"}}, id="a-details-object"),
+        pytest.param({"error": {"code": "517600", "message": _CROSS_REGION_MESSAGE}}, id="nested-under-error"),
+        pytest.param({**_PLAIN_ERROR_BODY, "request_id": "sf-other"}, id="another-request-id"),
+    ],
+)
+def test_an_http_error_shows_the_server_message_once_and_not_its_body(body):
+    rc, output = _get_output(_refusing_client(json.dumps(body).encode()))
+
+    assert rc == 1
+    assert output.count(_CROSS_REGION_MESSAGE) == 1
+    assert "response body:" not in output
+
+
+def test_an_http_error_shows_a_long_message_once_cut_to_1000_characters():
+    message = _CROSS_REGION_MESSAGE + " Details:" + " the rest of the message" * 50
+    rc, output = _get_output(_refusing_client(json.dumps({"code": "517604", "message": message}).encode()))
+
+    assert rc == 1
+    assert output.count(message[:1000] + "...") == 1
+    assert message not in output
+    assert "response body:" not in output
+
+
+def test_an_http_error_shows_a_message_once_with_its_credential_redacted():
+    body = {"code": "517604", "message": "token=abc123 was rejected"}
+    rc, output = _get_output(_refusing_client(json.dumps(body).encode()))
+
+    assert rc == 1
+    assert output.count("token=<redacted> was rejected") == 1
+    assert "abc123" not in output
+
+
+def test_an_http_error_with_a_code_and_no_message_leaves_out_the_rest_of_its_body():
+    body = {"code": "517602", "detail": [{"loc": ["body", "hardware"], "msg": "unsupported value"}]}
+    client = _refusing_client(json.dumps(body).encode())
+
+    rc, output = _get_output(client)
+
+    assert rc == 1
+    assert output == (
+        "error: [snowflake request id: sf-req-1] 403 Client Error: Forbidden for url: "
+        f"{client._prefix}/job-1 (517602)\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("content", "content_type"),
     [
         pytest.param(b"<html><body>Forbidden</body></html>", "text/html", id="not-json"),
-        pytest.param(b'{"detail": [{"loc": ["body"], "msg": "bad"}]}', "application/json", id="no-code-or-message"),
-        pytest.param(b'{"code": "517604", "message": "bad", "details": {"field": "x"}}', "application/json",
-                     id="a-field-the-message-leaves-out"),
-        # Values the error line happens to hold: "2" is in /api/v2/, "D" in MY_DB.
-        pytest.param(b'{"code": "517604", "message": "bad", "attempt": 2}', "application/json",
-                     id="a-number-the-url-holds"),
-        pytest.param(b'{"code": "517604", "message": "bad", "field": "D"}', "application/json",
-                     id="a-letter-the-url-holds"),
-        pytest.param(b'{"code": "517604", "message": "bad", "request_id": "sf-other"}', "application/json",
-                     id="another-request-id"),
-        pytest.param(json.dumps({"code": "517604", "message": "x" * 1500}).encode(), "application/json",
-                     id="a-message-cut-to-1000-characters"),
-        pytest.param(b'{"code": "517604", "message": "token=abc123 was rejected"}', "application/json",
-                     id="a-message-with-a-credential-redacted"),
+        pytest.param(b'{"detail": [{"loc": ["body"], "msg": "bad"}]}', "application/json", id="a-detail-list"),
+        pytest.param(b"{}", "application/json", id="an-empty-object"),
     ],
 )
-def test_an_http_error_keeps_a_body_its_message_does_not_show(content, content_type):
-    stderr = io.StringIO()
-
-    rc = cli.main(
-        ["get", "job-1"], client_factory=lambda _args: _refusing_client(content, content_type), stderr=stderr
-    )
+def test_an_http_error_prints_a_body_with_no_code_or_message(content, content_type):
+    rc, output = _get_output(_refusing_client(content, content_type))
 
     assert rc == 1
-    assert stderr.getvalue().endswith(f"\nresponse body: {content.decode()}\n")
+    assert output.endswith(f"\nresponse body: {content.decode()}\n")
+    assert output.count(content.decode()) == 1
+
+
+def test_an_http_error_with_an_empty_body_prints_no_body_line():
+    client = _refusing_client(b"")
+
+    rc, output = _get_output(client)
+
+    assert rc == 1
+    assert output == (
+        f"error: [snowflake request id: sf-req-1] 403 Client Error: Forbidden for url: {client._prefix}/job-1\n"
+    )
+
+
+def test_a_redirect_prints_its_body_so_the_server_message_shows_once():
+    body = {"code": "517604", "message": "the job moved"}
+    rc, output = _get_output(_refusing_client(json.dumps(body).encode(), status_code=302, reason="Found"))
+
+    assert rc == 1
+    assert output.count("the job moved") == 1
+    assert output.endswith(f"\nresponse body: {json.dumps(body)}\n")
+
+
+def test_a_rejected_pat_shows_the_server_message_once_and_the_hint():
+    body = {"code": "390303", "message": "Invalid OAuth access token."}
+    client = _refusing_client(
+        json.dumps(body).encode(), status_code=401, reason="Unauthorized", request_headers=_PAT_HEADERS
+    )
+
+    rc, output = _get_output(client)
+
+    assert rc == 1
+    assert output.count("Invalid OAuth access token.") == 1
+    assert "response body:" not in output
+    assert "Snowflake rejected your credentials (HTTP 401)." in output
+
+
+def test_an_http_error_prints_a_body_the_client_cannot_parse(caplog):
+    # A string nested deeper than the JSON decoder recurses.
+    content = json.dumps({"detail": "[" * 100_000}).encode()
+
+    with caplog.at_level("DEBUG", logger=cli.logger.name):
+        rc, output = _get_output(_refusing_client(content))
+
+    assert rc == 1
+    assert output.endswith(f"\nresponse body: {content.decode()[:4000]}...<truncated>\n")
+    assert "could not read the service's error from the response body" in caplog.text
 
 
 def test_invalid_job_json_returns_error(tmp_path):
