@@ -405,6 +405,24 @@ current role: it doesn't exist, or the role can't access it. It carries
 clients), and `.statement`, the SQL that would set it up: `CREATE DATABASE IF NOT
 EXISTS ...` and `CREATE SCHEMA IF NOT EXISTS ...`, separated by `; `.
 
+When the service answers with a 4xx or 5xx, the `requests.exceptions.HTTPError`
+that `raise_for_status()` raises keeps the service's answer as `.response`, and
+the client adds to its message: the Snowflake request id first, when the answer
+has the `x-snowflake-request-id` header, and the JSON error body's `code` and
+`message` last, when it has them:
+
+```text
+[snowflake request id: <id>] 403 Client Error: Forbidden for url: <url> (<code>): <message>
+```
+
+With only one of them the message ends in ` (<code>)` or `: <message>`. The
+service's message is cut at 1,000 characters, ending in `...`, and common
+credential patterns in it are redacted. A body that is not JSON, or has neither,
+adds nothing at the end. The errors above keep their own messages, and the model
+deployment methods raise their own; see
+[REST API section 3.6](rest-api.md#36-errors) and
+[section 14.7](rest-api.md#147-errors).
+
 ## Details not covered here
 
 For exact wire shapes, request framing, and schemas, see the
